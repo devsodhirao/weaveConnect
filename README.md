@@ -6,6 +6,15 @@ the coding tool they already use (Claude Code, Codex), and checks every step by 
 
 [Weave project](https://wandb.ai/devfromlll-learning-layer-labs/weaveConnect/weave)
 
+## Why this exists
+
+Coding agents now add tracing for developers, and W&B's `weave-instrument` skill tells them how.
+What is missing is proof: an agent can report "tracing added" while Weave receives nothing, or
+records every model call twice, or stores a key in a trace. weaveConnect is a prototype of that
+missing verify step. It turns "did it work?" into checks with a pass or fail and an exit code,
+so "done" comes with evidence instead of an agent's say-so. It is meant to sit beside W&B's
+skill and MCP server, not replace them.
+
 ## What it does
 
 | Command | What it proves |
@@ -50,6 +59,7 @@ Observed on October 30, 2026, against `devfromlll-learning-layer-labs/weaveConne
 
 | Run | Result |
 |---|---|
+| A clean clone, following "Try it here" as written | `uv sync` and 25 tests passed. `connect` showed the hidden key prompt, never displayed the key, created a new Weave project from the folder name and passed 4/4. `check` passed 6/6 on the traced control and failed on `no_init.py`; `eval` scored 6/6, 6/6 and 6/6; `next` moved from "See it" to "Check it". |
 | `connect`, here and in a fresh Git repo | 4/4 checks passed each time. In the fresh repo it added `.env` to `.gitignore` and left `.env` readable only by its owner. With no key anywhere, it failed with instructions and wrote nothing. |
 | `check` on the four controls | Correct tracing: 6/6 passed. No `weave.init`: failed, "Weave received nothing". Model call wrapped by hand as well: failed, 2 requests recorded twice. A fake secret passed to a traced function: failed, with its location named and the value not printed. |
 | A five-line tracing change in a fresh repo | 7/7 checks passed, including the expected `lookup_order` step. |
@@ -71,6 +81,9 @@ disagreement between the code check (6/6) and that judge (0/6) is what exposed t
 - The secret scan looks for the values of settings whose names contain KEY, TOKEN, SECRET or
   PASSWORD, plus a few common key formats. It cannot find a secret it has never seen.
 - The stage names in `src/weaveconnect/stages.py` are a draft.
+- Not yet measured: whether coding agents succeed more often with weaveConnect than with W&B's
+  own skill alone. `scripts/compare.py` runs the agent with and without the kit; it still needs
+  W&B's skill as a third arm before its answer means much.
 - Evaluations and the sample agent use W&B Inference credits.
 
 Local checks: `uv run pytest -q` and `uv run ruff check .`

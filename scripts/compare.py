@@ -141,7 +141,9 @@ def run_harness(repo: Path, task: Task, budget: float, model: str) -> dict:
         "--permission-mode",
         "acceptEdits",
         "--allowedTools",
-        "Bash,Read,Edit,Write,Glob,Grep,Skill",
+        # Commands are limited to running the agent, the kit and read-only Git.
+        "Bash(python *),Bash(weaveconnect *),Bash(ls *),Bash(cat *),Bash(git diff*),"
+        "Bash(git status*),Read,Edit,Write,Glob,Grep,Skill",
         "--max-budget-usd",
         f"{budget:.2f}",
         "--model",

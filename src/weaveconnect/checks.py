@@ -1,4 +1,8 @@
-"""Run the developer's command, then check what actually reached Weave."""
+"""Run the developer's command, then check what actually reached Weave.
+
+Both kinds of tracing are read: Calls (`@weave.op` and automatic integrations) and agent spans
+(W&B's Session SDK and OpenTelemetry GenAI), which W&B recommends for agent-shaped traces.
+"""
 
 import hashlib
 import json
@@ -14,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from weaveconnect import settings
-from weaveconnect.records import CallRecord, fetch_since
+from weaveconnect.records import CallRecord, SpanRecord, fetch_since, fetch_spans_since
 from weaveconnect.report import Report, Status
 
 SETUP_OP = "weaveconnect_setup_check"
@@ -59,12 +63,12 @@ def check_run(
             project,
             settings={"print_call_link": False, "implicitly_patch_integrations": False},
         )
-        records = _settled(client, started, settle)
+        records, spans = _settled(client, started, settle)
     except Exception as error:
         detail = settings.redact(f"{type(error).__name__}: {error}", secrets)
         report.add("Reading traces", Status.UNCHECKED, f"Could not read {project}: {detail}")
         return report
-    judge_records(report, records, secrets, expect_ops)
+    judge_records(report, records, secrets, expect_ops, spans)
     return report
 
 
@@ -86,15 +90,19 @@ def _run(report, command, repo, env, timeout, secrets) -> None:
     report.add("Your command", Status.FAIL, f"Exited with code {completed.returncode}. {tail}")
 
 
-def _settled(client: Any, since: datetime, settle: float) -> list[CallRecord]:
-    """Poll until the number of new calls stops changing, or `settle` seconds pass."""
+def _settled(
+    client: Any, since: datetime, settle: float
+) -> tuple[list[CallRecord], list[SpanRecord]]:
+    """Poll until the number of new calls and spans stops changing, or `settle` seconds pass."""
     deadline = time.monotonic() + settle
-    previous = -1
+    previous = (-1, -1)
     while True:
         records = [r for r in fetch_since(client, since) if r.op != SETUP_OP]
-        if (records and len(records) == previous) or time.monotonic() > deadline:
-            return records
-        previous = len(records)
+        spans = fetch_spans_since(client, since)
+        counts = (len(records), len(spans))
+        if (sum(counts) and counts == previous) or time.monotonic() > deadline:
+            return records, spans
+        previous = counts
         time.sleep(2)
 
 
@@ -103,9 +111,11 @@ def judge_records(
     records: list[CallRecord],
     secrets: list[str],
     expect_ops: tuple[str, ...] = (),
+    spans: list[SpanRecord] | tuple = (),
 ) -> None:
     """Add every trace check to `report`. Pure, so it is tested without Weave."""
-    if not records:
+    spans = list(spans)
+    if not records and not spans:
         report.add(
             "Traces arrived",
             Status.FAIL,
@@ -113,65 +123,103 @@ def judge_records(
             "before the agent starts and uses the same WEAVE_PROJECT.",
         )
         return
-    traces = {record.trace_id for record in records}
-    report.add("Traces arrived", Status.PASS, f"{len(records)} calls in {len(traces)} trace(s).")
+    traces = {record.trace_id for record in records} | {span.trace_id for span in spans}
+    parts = [f"{len(records)} calls"] if records else []
+    parts += [f"{len(spans)} agent spans"] if spans else []
+    report.add("Traces arrived", Status.PASS, f"{' and '.join(parts)} in {len(traces)} trace(s).")
 
     requests = [record for record in records if request_fingerprint(record)]
-    if requests:
-        report.add("Model calls recorded", Status.PASS, f"{len(requests)} model request(s).")
+    chats = [span for span in spans if span.operation == "chat"]
+    if requests or chats:
+        report.add(
+            "Model calls recorded", Status.PASS, f"{len(requests) + len(chats)} model call(s)."
+        )
     else:
         report.add(
             "Model calls recorded",
             Status.FAIL,
-            "No model request was recorded. Call weave.init before creating the model client, "
-            "and leave Weave's automatic integrations on.",
+            "No model call was recorded. Call weave.init before creating the model client and "
+            "leave automatic integrations on, or record each call with the Session SDK's turn.llm.",
         )
 
     ops = Counter(record.op for record in records)
+    span_names = Counter(span.name for span in spans)
     for name in expect_ops:
-        if any(name in op for op in ops):
-            report.add(f"Step `{name}` recorded", Status.PASS, "Found in the trace.")
-        else:
-            report.add(f"Step `{name}` recorded", Status.FAIL, "Not in the trace. Add @weave.op.")
+        found = any(name in op for op in ops) or any(
+            name in str(span.tool or span.name) for span in spans
+        )
+        report.add(
+            f"Step `{name}` recorded",
+            Status.PASS if found else Status.FAIL,
+            "Found in the trace." if found else "Not in the trace. Trace that step as well.",
+        )
 
     pairs = duplicate_requests(records)
+    crossed = recorded_both_ways(records, chats)
     if pairs:
         first, second = pairs[0]
         report.add(
-            "Each model request recorded once",
+            "Each model call recorded once",
             Status.FAIL,
             f"{len(pairs)} request(s) were recorded twice, for example by `{first.op}` and "
             f"`{second.op}`. Keep one: usually remove the hand-written wrapper.",
         )
-    elif requests:
-        report.add("Each model request recorded once", Status.PASS, "No duplicates.")
+    elif crossed:
+        report.add(
+            "Each model call recorded once",
+            Status.FAIL,
+            f"{len(crossed)} model call(s) were recorded both as an agent span and as a Call. When "
+            "you record spans yourself, turn automatic integrations off: weave.init(..., "
+            'settings={"implicitly_patch_integrations": False}).',
+        )
+    elif requests or chats:
+        report.add("Each model call recorded once", Status.PASS, "No duplicates.")
 
-    unfinished = [record for record in records if record.ended_at is None]
+    if spans:
+        orphans = agent_shape_problems(spans)
+        if orphans:
+            names = ", ".join(sorted({span.name for span in orphans}))
+            report.add(
+                "Agent shape",
+                Status.FAIL,
+                f"{len(orphans)} span(s) have no agent turn above them ({names}). Start each model "
+                "and tool span inside a turn.",
+            )
+        else:
+            turns = sum(1 for span in spans if span.operation == "invoke_agent")
+            report.add(
+                "Agent shape", Status.PASS, f"Model and tool spans sit inside {turns} turn(s)."
+            )
+
+    unfinished = [r.op for r in records if r.ended_at is None]
+    unfinished += [s.name for s in spans if s.ended_at is None]
     if unfinished:
-        names = ", ".join(sorted({record.op for record in unfinished}))
         report.add(
             "Every call finished",
             Status.FAIL,
-            f"{len(unfinished)} call(s) never finished ({names}). The process may have stopped "
-            "before Weave finished sending.",
+            f"{len(unfinished)} step(s) never finished ({', '.join(sorted(set(unfinished)))}). The "
+            "process may have stopped before Weave finished sending.",
         )
     else:
-        report.add("Every call finished", Status.PASS, "All calls have an end time.")
+        report.add("Every call finished", Status.PASS, "Every step has an end time.")
 
-    leaks = find_leaks(records, secrets)
+    leaks = find_leaks(records, secrets) + find_span_leaks(spans, secrets)
     if leaks:
-        record, path, kind = leaks[0]
+        where, path, kind = leaks[0]
         report.add(
             "No secrets in traces",
             Status.FAIL,
-            f"{len(leaks)} place(s) hold a secret; first: {kind} in `{record.op}` at {path}. "
-            "Keep it out of traced arguments, or redact it before Weave records it.",
+            f"{len(leaks)} place(s) hold a secret; first: {kind} in `{where}` at {path}. Keep it "
+            "out of traced arguments, or redact it before Weave records it.",
         )
     else:
         report.add("No secrets in traces", Status.PASS, "None found.")
 
-    report.notes.append("What Weave saw: " + ", ".join(f"{op} ×{n}" for op, n in ops.items()))
-    errors = sorted({record.op for record in records if record.exception})
+    if ops:
+        report.notes.append("Calls: " + ", ".join(f"{op} ×{n}" for op, n in ops.items()))
+    if span_names:
+        report.notes.append("Agent spans: " + ", ".join(f"{n} ×{c}" for n, c in span_names.items()))
+    errors = sorted({r.op for r in records if r.exception} | {s.name for s in spans if s.error})
     if errors:
         report.notes.append("Errors recorded inside: " + ", ".join(errors))
     roots = [record for record in records if record.parent_id is None and record.url]
@@ -201,27 +249,68 @@ def duplicate_requests(records: list[CallRecord]) -> list[tuple[CallRecord, Call
         group.sort(key=lambda record: record.started_at)
         for index, first in enumerate(group):
             for second in group[index + 1 :]:
-                if _overlap(first, second):
+                if _overlap(first.started_at, first.ended_at, second.started_at, second.ended_at):
                     pairs.append((first, second))
     return pairs
 
 
-def _overlap(first: CallRecord, second: CallRecord) -> bool:
-    end = first.ended_at or datetime.max.replace(tzinfo=UTC)
-    return second.started_at < end
+def recorded_both_ways(records: list[CallRecord], chats: list[SpanRecord]) -> list[SpanRecord]:
+    """Model-call spans that a Call for the same model also recorded, at the same time."""
+    requests = [record for record in records if request_fingerprint(record)]
+    return [
+        chat
+        for chat in chats
+        if any(
+            record.inputs.get("model") == chat.model
+            and _overlap(record.started_at, record.ended_at, chat.started_at, chat.ended_at)
+            for record in requests
+        )
+    ]
 
 
-def find_leaks(records: list[CallRecord], secrets: list[str]) -> list[tuple[CallRecord, str, str]]:
+def agent_shape_problems(spans: list[SpanRecord]) -> list[SpanRecord]:
+    """Model and tool spans with no agent turn above them in the same trace."""
+    by_id = {span.id: span for span in spans}
+    problems = []
+    for span in spans:
+        if span.operation not in ("chat", "execute_tool"):
+            continue
+        parent = by_id.get(span.parent_id or "")
+        while parent is not None and parent.operation != "invoke_agent":
+            parent = by_id.get(parent.parent_id or "")
+        if parent is None and span.parent_id is None:
+            problems.append(span)
+    return problems
+
+
+def _overlap(start_a, end_a, start_b, end_b) -> bool:
+    latest = datetime.max.replace(tzinfo=UTC)
+    return start_a < (end_b or latest) and start_b < (end_a or latest)
+
+
+def find_leaks(records: list[CallRecord], secrets: list[str]) -> list[tuple[str, str, str]]:
     """Places where a secret value or a common key format appears. Never returns the secret."""
     leaks = []
     for record in records:
         fields = {"inputs": record.inputs, "output": record.output, "exception": record.exception}
-        for path, text in _strings(fields):
-            kind = next(("a value from your settings" for s in secrets if s in text), None)
-            kind = kind or next((n for n, p in KEY_PATTERNS.items() if p.search(text)), None)
-            if kind:
-                leaks.append((record, path, kind))
+        leaks += [(record.op, path, kind) for path, kind in _secret_paths(fields, secrets)]
     return leaks
+
+
+def find_span_leaks(spans: list[SpanRecord], secrets: list[str]) -> list[tuple[str, str, str]]:
+    return [
+        (span.name, path, kind)
+        for span in spans
+        for path, kind in _secret_paths(span.payload, secrets)
+    ]
+
+
+def _secret_paths(fields: Any, secrets: list[str]) -> Iterator[tuple[str, str]]:
+    for path, text in _strings(fields):
+        kind = next(("a value from your settings" for s in secrets if s in text), None)
+        kind = kind or next((n for n, p in KEY_PATTERNS.items() if p.search(text)), None)
+        if kind:
+            yield path, kind
 
 
 def _strings(value: Any, path: str = "") -> Iterator[tuple[str, str]]:

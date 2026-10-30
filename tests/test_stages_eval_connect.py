@@ -70,7 +70,7 @@ def test_progress_reads_each_stage_from_what_exists():
     ]
     client = FakeClient(rows, datasets=["answer-cases"], feedback=["wandb.runnable.Judge"])
     reached = {p.stage.key: p for p in read_progress(client)}
-    assert reached["see"].evidence == "1 trace(s) from your code"
+    assert reached["see"].evidence == "1 recent run(s) of your agent"
     assert reached["catch"].reached and reached["check"].reached
     assert reached["improve"].evidence == "answer-checks ran 2 times"
     # A scorer's feedback is not a human judgment.

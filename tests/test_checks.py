@@ -64,7 +64,7 @@ def test_hand_wrapper_plus_automatic_tracing_is_a_duplicate():
     child = request(1.1, 1.5, parent="w")
     records = [call("answer", 0, 5, ident="root"), wrapper, child]
     result, _ = statuses(records)
-    assert result["Each model request recorded once"] is Status.FAIL
+    assert result["Each model call recorded once"] is Status.FAIL
     assert len(duplicate_requests(records)) == 1
 
 

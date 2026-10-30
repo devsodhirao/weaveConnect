@@ -35,7 +35,16 @@ def main(argv: list[str] | None = None) -> int:
     source.add_argument(
         "--from-recent", type=int, metavar="N", help="Use the last N traced inputs."
     )
+    source.add_argument(
+        "--from-failures", action="store_true", help="Use the inputs of recent failing runs."
+    )
     evaluate.add_argument("--judge-model", default=EVAL_DEFAULT_JUDGE)
+    evaluate.add_argument(
+        "--min-pass",
+        type=float,
+        metavar="FRACTION",
+        help="Fail (exit 1) when any check passes fewer than this share of cases, e.g. 0.8.",
+    )
 
     args = parser.parse_args(argv)
     repo = Path(args.dir)
@@ -52,7 +61,14 @@ def main(argv: list[str] | None = None) -> int:
 
         cases = (repo / args.cases) if args.cases else None
         report = run_eval(
-            repo, args.target, cases, args.from_recent, args.judge_model, args.project
+            repo,
+            args.target,
+            cases,
+            args.from_recent,
+            args.judge_model,
+            args.project,
+            from_failures=args.from_failures,
+            min_pass=args.min_pass,
         )
     else:
         return _next(repo, args.project)
@@ -72,13 +88,32 @@ def _next(repo: Path, project: str | None) -> int:
     os.environ[settings.KEY_NAME] = key
     import weave
 
+    from weaveconnect import findings
     from weaveconnect.stages import read_progress, render
 
     try:
         client = weave.init(
             project, settings={"print_call_link": False, "implicitly_patch_integrations": False}
         )
-        print(render(f"{client.entity}/{client.project}", read_progress(client)))
+        runs = findings.load_runs(client, window=50)
+        found = findings.find(runs)
+        entries = {run.entry for run in findings.failing(found)}
+        covered = findings.passing_failure_tests(client, entries) if entries else set()
+        notes = [
+            f"Tests built from these failures now pass (`{entry}-failures-checks`)."
+            for entry in sorted(covered)
+        ]
+        print(
+            render(
+                f"{client.entity}/{client.project}",
+                read_progress(client, runs),
+                found,
+                findings.slowest_step(runs),
+                findings.next_step(found, repo.resolve(), covered),
+                window=len(runs),
+                notes=notes,
+            )
+        )
     except Exception as error:
         print(f"Could not read {project}: {type(error).__name__}")
         return EXIT_CODES[Status.UNCHECKED]

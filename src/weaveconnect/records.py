@@ -7,7 +7,7 @@ versions of the developer's code, which fails noisily for code Weave cannot relo
 
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from weave.trace.urls import redirect_call
@@ -62,6 +62,7 @@ def query_calls(
     *,
     roots_only: bool = False,
     call_ids: list[str] | None = None,
+    parent_ids: list[str] | None = None,
     limit: int = 1000,
 ) -> Iterator[CallRecord]:
     """Calls in the client's project, newest first."""
@@ -70,6 +71,8 @@ def query_calls(
         query_filter["trace_roots_only"] = True
     if call_ids:
         query_filter["call_ids"] = call_ids
+    if parent_ids:
+        query_filter["parent_ids"] = parent_ids
     rows = client.server.calls_query_stream(
         {
             "project_id": client.project_id,
@@ -106,3 +109,80 @@ def fetch_since(client: Any, since: datetime, limit: int = 2000) -> list[CallRec
             break
         records.append(record)
     return records
+
+
+@dataclass(frozen=True)
+class SpanRecord:
+    """An agent span, the shape W&B's Session SDK and OpenTelemetry GenAI tracing record."""
+
+    id: str
+    trace_id: str
+    parent_id: str | None
+    operation: str
+    name: str
+    started_at: datetime
+    ended_at: datetime | None
+    model: str | None = None
+    tool: str | None = None
+    agent: str | None = None
+    error: str | None = None
+    payload: dict[str, Any] = field(default_factory=dict)
+
+
+SPAN_PAYLOAD = (
+    "input_messages",
+    "output_messages",
+    "tool_call_arguments",
+    "tool_call_result",
+    "system_instructions",
+    "status_message",
+)
+
+
+def query_spans(client: Any, *, limit: int = 1000) -> Iterator[SpanRecord]:
+    """Agent spans in the client's project with their messages, newest first."""
+    response = client.server.agent_spans_query(
+        {
+            "project_id": client.project_id,
+            "include_details": True,
+            "limit": limit,
+            "sort_by": [{"field": "started_at", "direction": "desc"}],
+        }
+    )
+    for row in getattr(response, "spans", response):
+        yield span_from_row(row)
+
+
+def span_from_row(row: Any) -> SpanRecord:
+    data = row.model_dump() if hasattr(row, "model_dump") else dict(row)
+    failed = str(data.get("status_code") or "").upper() == "ERROR" or bool(data.get("error_type"))
+    return SpanRecord(
+        id=str(data["span_id"]),
+        trace_id=str(data["trace_id"]),
+        parent_id=str(data.get("parent_span_id") or "") or None,
+        operation=str(data.get("operation_name") or ""),
+        name=str(data.get("span_name") or ""),
+        started_at=_utc(data["started_at"]),
+        ended_at=_utc(data["ended_at"]) if data.get("ended_at") else None,
+        model=data.get("request_model") or data.get("response_model") or None,
+        tool=data.get("tool_name") or None,
+        agent=data.get("agent_name") or None,
+        error=(data.get("error_type") or data.get("status_message") or "error") if failed else None,
+        payload=plain({name: data.get(name) for name in SPAN_PAYLOAD if data.get(name)}),
+    )
+
+
+def fetch_spans_since(client: Any, since: datetime, limit: int = 1000) -> list[SpanRecord]:
+    """Every agent span that started at or after `since`, newest first."""
+    spans = []
+    for span in query_spans(client, limit=limit):
+        if span.started_at < since:
+            break
+        spans.append(span)
+    return spans
+
+
+def _utc(value: Any) -> datetime:
+    """Span times arrive without a time zone; they are UTC."""
+    moment = value if isinstance(value, datetime) else datetime.fromisoformat(str(value))
+    return moment if moment.tzinfo else moment.replace(tzinfo=UTC)

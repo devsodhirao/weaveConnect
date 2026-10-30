@@ -73,10 +73,18 @@ class Progress:
     evidence: str
 
 
-def read_progress(client: Any) -> list[Progress]:
-    """Look only at what exists in the project; nothing here writes to Weave."""
+def read_progress(client: Any, agent_runs: list | None = None) -> list[Progress]:
+    """Look only at what exists in the project; nothing here writes to Weave.
+
+    `agent_runs` are recent runs from both kinds of tracing (see findings.load_runs); without
+    them, only root Calls count as traces of the developer's code.
+    """
     roots = list(query_calls(client, roots_only=True))
-    own = [r for r in roots if r.op not in (SETUP_OP, EVALUATE_OP)]
+    own = (
+        agent_runs
+        if agent_runs is not None
+        else [r for r in roots if r.op not in (SETUP_OP, EVALUATE_OP)]
+    )
     runs = [r for r in roots if r.op == EVALUATE_OP]
     datasets = _object_names(client, "Dataset")
     monitors = _object_names(client, "Monitor")
@@ -84,7 +92,7 @@ def read_progress(client: Any) -> list[Progress]:
     per_evaluation = Counter(object_name(r.inputs.get("self")) for r in runs)
     repeated = [name for name, count in per_evaluation.items() if count >= 2]
     found = {
-        "see": (bool(own), f"{len(own)} trace(s) from your code" if own else "no traces yet"),
+        "see": (bool(own), f"{len(own)} recent run(s) of your agent" if own else "no traces yet"),
         "catch": (bool(datasets), _listing("dataset", datasets)),
         "check": (bool(runs), f"{len(runs)} evaluation run(s)" if runs else "no evaluation yet"),
         "trust": (bool(feedback), f"{len(feedback)} human judgment(s)" if feedback else "none yet"),
@@ -99,14 +107,37 @@ def read_progress(client: Any) -> list[Progress]:
     return [Progress(stage, *found[stage.key]) for stage in STAGES]
 
 
-def render(project: str, progress: list[Progress]) -> str:
+def render(
+    project: str,
+    progress: list[Progress],
+    found: list | tuple = (),
+    slowest: str | None = None,
+    step: str | None = None,
+    window: int = 0,
+    notes: list[str] | tuple = (),
+) -> str:
+    """Stages, then what recent runs show, then one next step: from the evidence when a
+    failure was found, otherwise from the first stage without evidence."""
     width = max(len(stage.name) for stage in STAGES)
     lines = [f"Progress for {project}", ""]
     lines += [
         f"  [{'x' if p.reached else ' '}] {p.stage.name:<{width}}  {p.evidence}" for p in progress
     ]
+    if window:
+        lines += ["", f"What the last {window} run(s) show:"]
+        for finding in found:
+            lines += [f"  - {finding.summary}", f"    {finding.advice}"]
+        if not found:
+            lines.append(
+                "  - No failures found: no errors, empty answers, loops or tool calls written as text."
+            )
+        if slowest:
+            lines.append(f"  - {slowest}")
+        lines += [f"  - {note}" for note in notes]
     upcoming = next((p.stage for p in progress if not p.reached), None)
-    if upcoming is None:
+    if step:
+        lines += ["", f"Next: {step}"]
+    elif upcoming is None:
         lines += ["", "Every stage has evidence in Weave."]
     else:
         lines += ["", f"Next: {upcoming.name}. {upcoming.why}", f"  {upcoming.next_step}"]

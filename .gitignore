@@ -1,0 +1,13 @@
+# Local secrets — keep API keys out of the repo
+.env
+.env.*
+!.env.example
+
+# Reproducible dependencies and local runtime state
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.DS_Store
+wandb/

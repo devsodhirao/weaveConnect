@@ -6,14 +6,22 @@ the coding tool they already use (Claude Code, Codex), and checks every step by 
 
 [Weave project](https://wandb.ai/devfromlll-learning-layer-labs/weaveConnect/weave)
 
-## Why this exists
+## Why this exists, and how it relates to W&B's own skill
 
-Coding agents now add tracing for developers, and W&B's `weave-instrument` skill tells them how.
-What is missing is proof: an agent can report "tracing added" while Weave receives nothing, or
-records every model call twice, or stores a key in a trace. weaveConnect is a prototype of that
-missing verify step. It turns "did it work?" into checks with a pass or fail and an exit code,
-so "done" comes with evidence instead of an agent's say-so. It is meant to sit beside W&B's
-skill and MCP server, not replace them.
+W&B's [`weave-instrument`](https://github.com/wandb/skills/tree/main/skills/weave-instrument)
+skill already asks a coding agent to verify its work: read the traces back from Weave, compare
+them with what actually ran, treat empty results as unverified, and run known-bad controls. It
+covers far more than this prototype, including agent spans, turns, delegation and usage
+accounting.
+
+That verification is written as instructions, so the result depends on how well the agent writes
+its own queries. weaveConnect is a small prototype of doing part of that check as a command
+with an exit code, so the same setup gets the same verdict every time and can gate a pull
+request. It adds one check the skill does not describe: scanning stored traces for secrets.
+
+It only reads Weave **Calls** (the `@weave.op` and automatic-integration path). It does not yet
+read **agent spans**, which W&B's skill recommends for agent-shaped traces, so it can wrongly
+report "Weave received nothing" for a setup that follows that recommendation.
 
 ## What it does
 
@@ -35,9 +43,9 @@ checked.
    or point your `AGENTS.md` at `skills/weaveconnect/SKILL.md` for Codex.
 
 The skill tells the agent to make the smallest tracing change, prove it with `weaveconnect check`,
-and never claim success unless every check passed. W&B's own `weave-instrument` skill can write
-the tracing code; weaveConnect checks that it works. The one step the agent never does is
-handle the key: the person types it into `weaveconnect connect`, hidden.
+and never claim success unless every check passed. The one step the agent never does is handle
+the key: the person types it into `weaveconnect connect`, hidden. This skill has not yet been
+measured in a live agent session.
 
 ## Try it here
 
@@ -81,9 +89,12 @@ disagreement between the code check (6/6) and that judge (0/6) is what exposed t
 - The secret scan looks for the values of settings whose names contain KEY, TOKEN, SECRET or
   PASSWORD, plus a few common key formats. It cannot find a secret it has never seen.
 - The stage names in `src/weaveconnect/stages.py` are a draft.
+- Only Calls are checked; agent spans are not (see above).
 - Not yet measured: whether coding agents succeed more often with weaveConnect than with W&B's
-  own skill alone. `scripts/compare.py` runs the agent with and without the kit; it still needs
-  W&B's skill as a third arm before its answer means much.
+  own skill alone. `scripts/compare.py` runs the agent with and without the kit, but it scores
+  results with `weaveconnect check`, which cannot yet score agent spans. A fair comparison with
+  W&B's skill needs that first. W&B runs its own skill benchmark
+  ([Skill Bench](https://github.com/wandb/skills/tree/main/bench)) for this kind of question.
 - Evaluations and the sample agent use W&B Inference credits.
 
 Local checks: `uv run pytest -q` and `uv run ruff check .`

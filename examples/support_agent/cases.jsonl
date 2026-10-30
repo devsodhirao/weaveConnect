@@ -1,0 +1,6 @@
+{"question": "Where is my order 1042?", "expected": ["shipped", "on its way", "in transit"]}
+{"question": "Has order 1044 arrived yet?", "expected": ["delivered"]}
+{"question": "When will order 1043 get to me?", "expected": ["November 6", "Nov 6", "Nov. 6"]}
+{"question": "Can I return something I bought three weeks ago?", "expected": ["30 days", "30-day", "thirty days"]}
+{"question": "Where is order 9999?", "expected": ["no order", "couldn't find", "could not find", "can't find", "cannot find", "doesn't exist", "does not exist", "not found"]}
+{"question": "Can I return a final-sale jacket?", "expected": ["cannot be returned", "can't be returned", "cannot return", "can't return", "not returnable", "not eligible"]}

@@ -1,0 +1,150 @@
+[
+  {
+    "task": "add-tracing",
+    "arm": "bare",
+    "run": 1,
+    "passed": false,
+    "checks": {
+      "Your command": "pass",
+      "Traces arrived": "fail"
+    },
+    "seconds": null,
+    "cost_usd": null,
+    "turns": null,
+    "harness_error": false,
+    "used_weaveconnect": false,
+    "diff_lines": 0
+  },
+  {
+    "task": "add-tracing",
+    "arm": "kit",
+    "run": 1,
+    "passed": false,
+    "checks": {
+      "Your command": "pass",
+      "Traces arrived": "fail"
+    },
+    "seconds": null,
+    "cost_usd": null,
+    "turns": null,
+    "harness_error": false,
+    "used_weaveconnect": false,
+    "diff_lines": 0
+  },
+  {
+    "task": "nothing-arrives",
+    "arm": "bare",
+    "run": 1,
+    "passed": false,
+    "checks": {
+      "Your command": "pass",
+      "Traces arrived": "fail"
+    },
+    "seconds": null,
+    "cost_usd": null,
+    "turns": null,
+    "harness_error": false,
+    "used_weaveconnect": false,
+    "diff_lines": 0
+  },
+  {
+    "task": "nothing-arrives",
+    "arm": "kit",
+    "run": 1,
+    "passed": false,
+    "checks": {
+      "Your command": "pass",
+      "Traces arrived": "fail"
+    },
+    "seconds": null,
+    "cost_usd": null,
+    "turns": null,
+    "harness_error": false,
+    "used_weaveconnect": false,
+    "diff_lines": 0
+  },
+  {
+    "task": "counted-twice",
+    "arm": "bare",
+    "run": 1,
+    "passed": false,
+    "checks": {
+      "Your command": "pass",
+      "Traces arrived": "pass",
+      "Model calls recorded": "pass",
+      "Step `lookup_order` recorded": "pass",
+      "Each model request recorded once": "fail",
+      "Every call finished": "pass",
+      "No secrets in traces": "pass"
+    },
+    "seconds": null,
+    "cost_usd": null,
+    "turns": null,
+    "harness_error": false,
+    "used_weaveconnect": false,
+    "diff_lines": 0
+  },
+  {
+    "task": "counted-twice",
+    "arm": "kit",
+    "run": 1,
+    "passed": false,
+    "checks": {
+      "Your command": "pass",
+      "Traces arrived": "pass",
+      "Model calls recorded": "pass",
+      "Step `lookup_order` recorded": "pass",
+      "Each model request recorded once": "fail",
+      "Every call finished": "pass",
+      "No secrets in traces": "pass"
+    },
+    "seconds": null,
+    "cost_usd": null,
+    "turns": null,
+    "harness_error": false,
+    "used_weaveconnect": false,
+    "diff_lines": 0
+  },
+  {
+    "task": "secret-in-trace",
+    "arm": "bare",
+    "run": 1,
+    "passed": false,
+    "checks": {
+      "Your command": "pass",
+      "Traces arrived": "pass",
+      "Model calls recorded": "pass",
+      "Step `lookup_order` recorded": "pass",
+      "Each model request recorded once": "pass",
+      "Every call finished": "pass",
+      "No secrets in traces": "fail"
+    },
+    "seconds": null,
+    "cost_usd": null,
+    "turns": null,
+    "harness_error": false,
+    "used_weaveconnect": false,
+    "diff_lines": 0
+  },
+  {
+    "task": "secret-in-trace",
+    "arm": "kit",
+    "run": 1,
+    "passed": false,
+    "checks": {
+      "Your command": "pass",
+      "Traces arrived": "pass",
+      "Model calls recorded": "pass",
+      "Step `lookup_order` recorded": "pass",
+      "Each model request recorded once": "pass",
+      "Every call finished": "pass",
+      "No secrets in traces": "fail"
+    },
+    "seconds": null,
+    "cost_usd": null,
+    "turns": null,
+    "harness_error": false,
+    "used_weaveconnect": false,
+    "diff_lines": 0
+  }
+]

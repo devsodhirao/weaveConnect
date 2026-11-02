@@ -111,3 +111,23 @@ def test_next_without_setup_says_what_to_do(tmp_path, monkeypatch, capsys):
     monkeypatch.delenv("WEAVE_PROJECT", raising=False)
     assert cli.main(["next", "--dir", str(tmp_path)]) == 2
     assert "weaveconnect connect" in capsys.readouterr().out
+
+
+def test_agreement_counts_both_directions_of_judge_error():
+    from weaveconnect.label import Case, agreement
+
+    def case(judge):
+        return Case("id", "q", "a", judge, "", {"answered": True})
+
+    labels = [(case(True), True), (case(True), False), (case(False), True), (case(False), False)]
+    assert agreement(labels) == (
+        "The judge agreed with you on 2 of 4 cases: it passed 1 you failed and failed 1 you passed."
+    )
+    assert case(False).disputed and not case(True).disputed
+
+
+def test_label_refuses_without_a_person(tmp_path):
+    from weaveconnect.label import run_label
+
+    report = run_label(tmp_path, interactive=False)
+    assert report.exit_code == 2 and "must come from a person" in report.render()

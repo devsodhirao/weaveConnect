@@ -20,7 +20,8 @@ def main(argv: list[str] | None = None) -> int:
     check = commands.add_parser("check", help="Run your agent and check what reached Weave.")
     progress = commands.add_parser("next", help="Show the stage reached and the next step.")
     evaluate = commands.add_parser("eval", help="Run an evaluation from cases or recent traces.")
-    for command in (connect, check, progress, evaluate):
+    label = commands.add_parser("label", help="Judge answers yourself and see if the judge agrees.")
+    for command in (connect, check, progress, evaluate, label):
         command.add_argument("--dir", default=".", help="Project folder (default: here).")
         command.add_argument("--project", help="Weave project, as team/name or name.")
     connect.add_argument("--no-prompt", action="store_true", help="Never ask for the key.")
@@ -49,6 +50,10 @@ def main(argv: list[str] | None = None) -> int:
         help="Fail (exit 1) when any check passes fewer than this share of cases, e.g. 0.8.",
     )
 
+    label.add_argument("--evaluation", help="Evaluation name (default: the latest).")
+    label.add_argument("--limit", type=int, default=10, help="Most cases to label (default 10).")
+    label.add_argument("--no-save", action="store_true", help="Do not save labels to Weave.")
+
     args = parser.parse_args(argv)
     repo = Path(args.dir)
     if args.command == "connect":
@@ -59,6 +64,10 @@ def main(argv: list[str] | None = None) -> int:
         from weaveconnect.checks import check_run
 
         report = check_run(args.run, repo, args.project, tuple(args.expect_op), args.timeout)
+    elif args.command == "label":
+        from weaveconnect.label import run_label
+
+        report = run_label(repo, args.evaluation, args.limit, save=not args.no_save)
     elif args.command == "eval":
         from weaveconnect.evaluate import run_eval
 

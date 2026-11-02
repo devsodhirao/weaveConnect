@@ -17,7 +17,8 @@ from typing import Any
 from weaveconnect.checks import SETUP_OP, request_fingerprint
 from weaveconnect.records import CallRecord, SpanRecord, object_name, query_calls, query_spans
 
-FAILURES = ("tool_text", "errors", "empty", "looping")
+FAILURES = ("tool_text", "errors", "empty", "looping", "cut_off", "unknown_tool", "repeats")
+CUT_OFF = {"length", "max_tokens", "MAX_TOKENS"}
 _TOOL_MARKERS = re.compile(r"<tool_call>|\[TOOL_CALLS\]|<\|python_tag\|>|<function=", re.IGNORECASE)
 _FENCE = re.compile(r"^```(?:json)?\s*|\s*```$")
 _SKIP_DIRS = {".git", ".venv", "venv", "node_modules", "site-packages", "__pycache__"}
@@ -28,6 +29,9 @@ class Reply:
     model: str | None
     text: str
     called_tool: bool
+    finish: str | None = None
+    requested: tuple = ()
+    offered: tuple | None = None
 
 
 @dataclass
@@ -42,6 +46,7 @@ class Run:
     replies: list[Reply] = field(default_factory=list)
     errors: list[tuple[str, str]] = field(default_factory=list)
     steps: list[tuple[str, float]] = field(default_factory=list)
+    tool_errors: list[tuple[str, str]] = field(default_factory=list)
     url: str | None = None
 
 
@@ -130,6 +135,8 @@ def runs_from_calls(calls: list[CallRecord]) -> list[Run]:
         root = next((call for call in members if call.parent_id is None), None)
         if root is None or root.op == SETUP_OP or root.op.startswith("Evaluation."):
             continue
+        if request_fingerprint(root):
+            continue  # a lone model call traced on its own is not a run of an agent
         prompt = next((value for value in root.inputs.values() if isinstance(value, str)), None)
         run = Run(
             trace_id,
@@ -141,14 +148,22 @@ def runs_from_calls(calls: list[CallRecord]) -> list[Run]:
             answer=root.output,
             url=root.url,
         )
+        recorded = set()
         for call in sorted(members, key=lambda c: c.started_at):
-            if request_fingerprint(call):
-                run.replies.append(Reply(call.inputs.get("model"), *model_reply(call.output)))
+            fingerprint = request_fingerprint(call)
+            if fingerprint and fingerprint not in recorded:
+                recorded.add(fingerprint)  # one request recorded twice is still one reply
+                run.replies.append(call_reply(call))
+            elif fingerprint:
+                continue
+            elif call is not root and isinstance(call.output, dict) and call.output.get("error"):
+                run.tool_errors.append((call.op, str(call.output["error"])[:80]))
             if call.exception:
                 run.errors.append((call.op, call.exception.strip().splitlines()[0][:120]))
             if call is not root and (duration := _seconds(call.started_at, call.ended_at)):
                 run.steps.append((call.op, duration))
-        runs.append(run)
+        if run.replies or run.errors:
+            runs.append(run)
     return runs
 
 
@@ -172,7 +187,9 @@ def runs_from_spans(spans: list[SpanRecord]) -> list[Run]:
         )
         for span in sorted(members, key=lambda s: s.started_at):
             if span.operation == "chat":
-                reply = Reply(span.model, *span_reply(span.payload.get("output_messages")))
+                text, called = span_reply(span.payload.get("output_messages"))
+                finish = next(iter(span.payload.get("finish_reasons") or []), None)
+                reply = Reply(span.model, text, called, finish)
                 run.replies.append(reply)
                 run.answer = reply.text
             if span.error:
@@ -196,6 +213,55 @@ def load_runs(client: Any, window: int = 50) -> list[Run]:
     runs = runs_from_calls(list(query_calls(client, limit=3000)))
     runs += runs_from_spans(list(query_spans(client, limit=1000)))
     return sorted(runs, key=lambda run: run.started_at, reverse=True)[:window]
+
+
+def call_reply(call: CallRecord) -> Reply:
+    """A model Call's reply, with why it stopped, the tools it asked for and the tools offered."""
+    text, called = model_reply(call.output)
+    output = call.output if isinstance(call.output, dict) else {}
+    finish, requested = None, ()
+    choices = output.get("choices")
+    if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+        finish = choices[0].get("finish_reason")
+        asked = (choices[0].get("message") or {}).get("tool_calls") or []
+        requested = tuple(
+            ((c.get("function") or {}).get("name"), (c.get("function") or {}).get("arguments"))
+            for c in asked
+            if isinstance(c, dict)
+        )
+    elif isinstance(output.get("content"), list):
+        finish = output.get("stop_reason")
+        requested = tuple(
+            (b.get("name"), json.dumps(b.get("input"), sort_keys=True))
+            for b in output["content"]
+            if isinstance(b, dict) and b.get("type") == "tool_use"
+        )
+    tools = call.inputs.get("tools")
+    offered = (
+        tuple(
+            (t.get("function") or {}).get("name") or t.get("name")
+            for t in tools
+            if isinstance(t, dict)
+        )
+        if isinstance(tools, list)
+        else None
+    )
+    return Reply(call.inputs.get("model"), text, called, finish, requested, offered)
+
+
+def _unknown_tools(run: Run) -> set[str]:
+    return {
+        name
+        for reply in run.replies
+        if reply.offered is not None
+        for name, _ in reply.requested
+        if name and name not in reply.offered
+    }
+
+
+def _repeated(run: Run) -> set[str]:
+    asked = Counter(request for reply in run.replies for request in reply.requested)
+    return {name for (name, _), count in asked.items() if count >= 2 and name}
 
 
 def find(runs: list[Run]) -> list[Finding]:
@@ -254,6 +320,54 @@ def find(runs: list[Run]) -> list[Finding]:
                     "The agent may be looping. Open the longest trace and look for repeated steps.",
                 )
             )
+    model_calls = sum(len(r.replies) for r in runs)
+    cut = [r for r in runs if any(x.finish in CUT_OFF for x in r.replies)]
+    if cut:
+        count = sum(x.finish in CUT_OFF for r in runs for x in r.replies)
+        findings.append(
+            Finding(
+                "cut_off",
+                f"{len(cut)} of {total} runs had a model call cut off at the token limit "
+                f"({count} of {model_calls} model calls).",
+                cut,
+                "Raise the output token limit for that call, or ask the model for shorter output.",
+            )
+        )
+    unknown = [r for r in runs if _unknown_tools(r)]
+    if unknown:
+        names = ", ".join(sorted({n for r in unknown for n in _unknown_tools(r)}))
+        findings.append(
+            Finding(
+                "unknown_tool",
+                f"{len(unknown)} of {total} runs asked for a tool that does not exist ({names}).",
+                unknown,
+                "Check that the tool names in the prompt match the tools passed to the model.",
+            )
+        )
+    repeats = [r for r in runs if _repeated(r)]
+    if repeats:
+        names = ", ".join(sorted({n for r in repeats for n in _repeated(r)}))
+        findings.append(
+            Finding(
+                "repeats",
+                f"{len(repeats)} of {total} runs called the same tool with the same arguments more "
+                f"than once ({names}).",
+                repeats,
+                "The agent may not be reading the tool's result; open a trace and check what it returned.",
+            )
+        )
+    tool_failed = [r for r in runs if r.tool_errors]
+    if tool_failed:
+        tool, message = Counter(e for r in tool_failed for e in r.tool_errors).most_common(1)[0][0]
+        findings.append(
+            Finding(
+                "tool_errors",
+                f"{len(tool_failed)} of {total} runs got an error result from a tool, most often "
+                f"`{tool}`: {message}",
+                tool_failed,
+                "Not counted as a failure: check these are expected, like a lookup that found nothing.",
+            )
+        )
     return findings
 
 

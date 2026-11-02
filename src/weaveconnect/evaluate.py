@@ -111,6 +111,7 @@ def run_eval(
     project: str | None = None,
     from_failures: bool = False,
     min_pass: float | None = None,
+    trials: int = 1,
 ) -> Report:
     repo = repo.resolve()
     report = Report(f"Evaluating {target}")
@@ -163,19 +164,22 @@ def run_eval(
     column_map = {} if question == "question" else {"question": question}
     scorers.append(Judge(model=judge_model, column_map=column_map))
     evaluation_name = f"{label.removesuffix('-cases')}-checks"
-    evaluation = weave.Evaluation(name=evaluation_name, dataset=dataset, scorers=scorers)
+    evaluation = weave.Evaluation(
+        name=evaluation_name, dataset=dataset, scorers=scorers, trials=trials
+    )
     model = function if callable(getattr(function, "call", None)) else weave.op(function)
     summary = asyncio.run(evaluation.evaluate(model))
     client.flush()
 
-    total = len(rows)
+    total = len(rows) * trials
+    unit = "runs" if trials > 1 else "cases"
     passes = {s: _count(summary[s], "pass") for s in SCORER_NAMES if s in summary}
     for scorer, passed in passes.items():
-        line = f"{scorer}: {passed}/{total} passed"
+        line = f"{scorer}: {passed}/{total} {unit} passed"
         if scorer == "Judge":
             line += f" ({_count(summary[scorer], 'checked')}/{total} judged by {judge_model})"
         report.notes.append(line)
-    report.notes += compare_with_previous(client, evaluation_name, name, total)
+    report.notes += compare_with_previous(client, evaluation_name, total)
     url = _latest_evaluation_url(client)
     report.add("Evaluation ran", Status.PASS, f"Scores recorded in Weave: {url or project}")
     if min_pass is not None:
@@ -185,7 +189,7 @@ def run_eval(
             Status.FAIL if below else Status.PASS,
             f"Below {min_pass:.0%}: {', '.join(below)}."
             if below
-            else f"Every check passed at least {min_pass:.0%} of cases.",
+            else f"Every check passed at least {min_pass:.0%} of {unit}.",
         )
     return report
 
@@ -193,30 +197,43 @@ def run_eval(
 SCORER_NAMES = ("answered", "no_raw_tool_call", "mentions_expected", "Judge")
 
 
-def compare_with_previous(client: Any, evaluation: str, function: str, total: int) -> list[str]:
-    """Case-by-case changes since the previous run of the same evaluation."""
+def compare_with_previous(client: Any, evaluation: str, total: int) -> list[str]:
+    """Case-by-case changes since the previous run of the same evaluation.
+
+    With repeated trials, a case counts as fixed only when every trial now passes, and as flaky
+    when its trials disagree, so one lucky run is not reported as a fix.
+    """
     runs = [
         record
         for record in query_calls(client, roots_only=True, limit=300)
         if record.op == "Evaluation.evaluate"
         and object_name(record.inputs.get("self")) == evaluation
     ]
-    if len(runs) < 2:
-        return ["First run of this evaluation; the next run will be compared with it."]
+    if not runs:
+        return []
     after = case_scores(client, runs[0], expected=total)
-    before = case_scores(client, runs[1])
-    changes = compare_cases(before, after)
+    lines = []
+    flaky_now = {
+        row for row, case in after.items() if any(_mixed(v) for v in case["scores"].values())
+    }
+    if flaky_now:
+        lines.append(f"{len(flaky_now)} case(s) gave different results across trials (flaky).")
+    if len(runs) < 2:
+        return lines + ["First run of this evaluation; the next run will be compared with it."]
+    changes = compare_cases(case_scores(client, runs[1]), after)
     if not changes:
-        return ["No cases in common with the previous run, so nothing to compare."]
+        return lines + ["No cases in common with the previous run, so nothing to compare."]
     shared = next(iter(changes.values()))["shared"]
-    lines = [
+    lines.append(
         f"Compared with the previous run ({_age(runs[1], runs[0])}), on {shared} shared cases:"
-    ]
+    )
     broke = []
     for scorer, change in changes.items():
         lines.append(
-            f"  {scorer}: {change['before']}/{shared} -> {change['after']}/{shared} "
-            f"({len(change['fixed'])} fixed, {len(change['broke'])} broke)"
+            f"  {scorer}: {change['before']}/{change['before_total']} -> "
+            f"{change['after']}/{change['after_total']} passed "
+            f"({len(change['fixed'])} fixed, {len(change['broke'])} broke, "
+            f"{len(change['flaky'])} flaky)"
         )
         broke += [row for row in change["broke"] if row not in broke]
     for row in broke[:3]:
@@ -225,47 +242,59 @@ def compare_with_previous(client: Any, evaluation: str, function: str, total: in
 
 
 def case_scores(client: Any, evaluate_call: Any, expected: int | None = None) -> dict[str, dict]:
-    """Row id -> pass/fail per scorer, read from the evaluation's per-case calls."""
+    """Row id -> every trial's pass/fail per scorer, from the evaluation's per-case calls."""
     for _ in range(10):
-        cases = {}
-        for record in query_calls(client, parent_ids=[evaluate_call.id], limit=2000):
+        cases: dict[str, dict] = {}
+        seen = 0
+        for record in query_calls(client, parent_ids=[evaluate_call.id], limit=5000):
             if record.op != "Evaluation.predict_and_score":
                 continue
-            row = str(record.inputs.get("example") or "").rsplit("/", 1)[-1]
-            scores = (record.output or {}).get("scores") or {}
-            cases[row] = {
-                "id": record.id,
-                "example": str(record.inputs.get("example") or ""),
-                "scores": {
-                    scorer: value.get("pass")
-                    for scorer, value in scores.items()
-                    if isinstance(value, dict) and isinstance(value.get("pass"), bool)
-                },
-            }
-        if expected is None or len(cases) >= expected:
+            seen += 1
+            example = str(record.inputs.get("example") or "")
+            case = cases.setdefault(
+                example.rsplit("/", 1)[-1], {"ids": [], "example": example, "scores": {}}
+            )
+            case["ids"].append(record.id)
+            for scorer, value in ((record.output or {}).get("scores") or {}).items():
+                if isinstance(value, dict) and isinstance(value.get("pass"), bool):
+                    case["scores"].setdefault(scorer, []).append(value["pass"])
+        if expected is None or seen >= expected:
             return cases
         time.sleep(2)
     return cases
 
 
 def compare_cases(before: dict[str, dict], after: dict[str, dict]) -> dict[str, dict]:
-    """Per scorer, over the cases both runs share: passes before and after, fixed and broke."""
+    """Per scorer, over the cases both runs share.
+
+    fixed: some trial failed before and every trial passes now.
+    broke: every trial passed before and some trial fails now.
+    flaky: the trials disagree now.
+    """
     shared = sorted(before.keys() & after.keys())
     if not shared:
         return {}
     scorers = sorted({scorer for row in shared for scorer in after[row]["scores"]})
     result = {}
     for scorer in scorers:
-        old = {row: before[row]["scores"].get(scorer) for row in shared}
-        new = {row: after[row]["scores"].get(scorer) for row in shared}
+        old = {row: before[row]["scores"].get(scorer, []) for row in shared}
+        new = {row: after[row]["scores"].get(scorer, []) for row in shared}
+        both = [row for row in shared if old[row] and new[row]]
         result[scorer] = {
             "shared": len(shared),
-            "before": sum(value is True for value in old.values()),
-            "after": sum(value is True for value in new.values()),
-            "fixed": [row for row in shared if old[row] is False and new[row] is True],
-            "broke": [row for row in shared if old[row] is True and new[row] is False],
+            "before": sum(sum(trials) for trials in old.values()),
+            "before_total": sum(len(trials) for trials in old.values()),
+            "after": sum(sum(trials) for trials in new.values()),
+            "after_total": sum(len(trials) for trials in new.values()),
+            "fixed": [row for row in both if not all(old[row]) and all(new[row])],
+            "broke": [row for row in both if all(old[row]) and not all(new[row])],
+            "flaky": [row for row in shared if _mixed(new[row])],
         }
     return result
+
+
+def _mixed(trials: list[bool]) -> bool:
+    return 0 < sum(trials) < len(trials)
 
 
 def _case_text(example_ref: str) -> str:

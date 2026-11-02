@@ -134,6 +134,7 @@ SPAN_PAYLOAD = (
     "output_messages",
     "tool_call_arguments",
     "tool_call_result",
+    "finish_reasons",
     "system_instructions",
     "status_message",
 )

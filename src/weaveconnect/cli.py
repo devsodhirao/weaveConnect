@@ -40,6 +40,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     evaluate.add_argument("--judge-model", default=EVAL_DEFAULT_JUDGE)
     evaluate.add_argument(
+        "--trials", type=int, default=1, help="Run each case this many times (default 1)."
+    )
+    evaluate.add_argument(
         "--min-pass",
         type=float,
         metavar="FRACTION",
@@ -69,6 +72,7 @@ def main(argv: list[str] | None = None) -> int:
             args.project,
             from_failures=args.from_failures,
             min_pass=args.min_pass,
+            trials=max(1, args.trials),
         )
     else:
         return _next(repo, args.project)

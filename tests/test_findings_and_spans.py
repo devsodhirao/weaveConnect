@@ -176,21 +176,32 @@ def test_secrets_in_span_payloads_are_found():
     assert {c.name: c.status for c in report.checks}["No secrets in traces"] is Status.FAIL
 
 
-def test_case_comparison_counts_fixed_and_broken_cases():
+def test_case_comparison_separates_fixed_broken_and_flaky_cases():
+    def case(*trials):
+        return {"scores": {"no_raw_tool_call": list(trials)}}
+
     before = {
-        "a": {"scores": {"no_raw_tool_call": False}},
-        "b": {"scores": {"no_raw_tool_call": True}},
-        "c": {"scores": {"no_raw_tool_call": False}},
+        "a": case(False, False),
+        "b": case(True, True),
+        "c": case(False, True),
+        "d": case(False),
     }
     after = {
-        "a": {"scores": {"no_raw_tool_call": True}},
-        "b": {"scores": {"no_raw_tool_call": False}},
-        "c": {"scores": {"no_raw_tool_call": False}},
-        "new": {"scores": {"no_raw_tool_call": True}},
+        "a": case(True, True),
+        "b": case(True, False),
+        "c": case(True, True),
+        "d": case(True, False),
     }
     change = compare_cases(before, after)["no_raw_tool_call"]
-    assert (change["shared"], change["before"], change["after"]) == (3, 1, 1)
-    assert change["fixed"] == ["a"] and change["broke"] == ["b"]
+    assert (change["before"], change["before_total"], change["after"], change["after_total"]) == (
+        3,
+        7,
+        6,
+        8,
+    )
+    assert change["fixed"] == ["a", "c"]
+    assert change["broke"] == ["b"]
+    assert change["flaky"] == ["b", "d"]
 
 
 def test_next_step_names_the_file_that_defines_the_failing_function(tmp_path: Path):
@@ -202,3 +213,65 @@ def test_next_step_names_the_file_that_defines_the_failing_function(tmp_path: Pa
     found = findings.find([run])
     step = findings.next_step(found, tmp_path)
     assert "--target pkg/bot.py:answer --from-failures" in step
+
+
+def _tool_reply(name, args, finish="tool_calls"):
+    tool_call = {"id": "1", "function": {"name": name, "arguments": args}}
+    return {
+        "choices": [
+            {"finish_reason": finish, "message": {"content": None, "tool_calls": [tool_call]}}
+        ]
+    }
+
+
+def _request(ident, output, trace="t", **inputs):
+    tools = [{"type": "function", "function": {"name": "lookup_order"}}]
+    return call(
+        "openai.chat.completions.create",
+        ident,
+        "root",
+        trace=trace,
+        output=output,
+        model="m",
+        messages=[ident],
+        tools=tools,
+        **inputs,
+    )
+
+
+def test_cut_off_unknown_and_repeated_tool_calls_are_failures():
+    cut = {"choices": [{"finish_reason": "length", "message": {"content": "Your order"}}]}
+    runs = findings.runs_from_calls(
+        [
+            call("answer", "root", trace="t", output="x", question="q"),
+            _request("a", _tool_reply("lookup_order", '{"order_id": "1"}')),
+            _request("b", _tool_reply("lookup_order", '{"order_id": "1"}')),
+            _request("c", _tool_reply("refund_order", "{}")),
+            _request("d", cut),
+        ]
+    )
+    found = {f.key: f.summary for f in findings.find(runs)}
+    assert found["cut_off"] == (
+        "1 of 1 runs had a model call cut off at the token limit (1 of 4 model calls)."
+    )
+    assert found["unknown_tool"].endswith("(refund_order).")
+    assert found["repeats"].endswith("(lookup_order).")
+
+
+def test_a_tool_error_result_is_reported_but_not_counted_as_a_failure():
+    runs = findings.runs_from_calls(
+        [
+            call("answer", "root", trace="t", output="No such order.", question="q"),
+            call(
+                "lookup_order",
+                "tool",
+                "root",
+                trace="t",
+                output={"error": "No order with that number."},
+            ),
+            _request("m", {"choices": [{"finish_reason": "stop", "message": {"content": "No."}}]}),
+        ]
+    )
+    found = findings.find(runs)
+    assert [f.key for f in found] == ["tool_errors"]
+    assert findings.failing(found) == []

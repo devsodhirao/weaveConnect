@@ -202,6 +202,9 @@ def run_harness(repo: Path, task: Task, budget: float, model: str, arm: str = "b
         "harness_error": bool(result.get("is_error")),
         "skills_used": skills,
         "used_weaveconnect": any(KIT_COMMAND.search(command) for command in commands),
+        "outcome": str(result.get("subtype") or ""),
+        "final_message": str(result.get("result") or "")[:400],
+        "denied": len(result.get("permission_denials") or []),
     }
 
 
@@ -237,6 +240,9 @@ class Result:
     harness_error: bool = False
     used_weaveconnect: bool = False
     skills_used: list | None = None
+    outcome: str = ""
+    final_message: str = ""
+    denied: int = 0
     diff_lines: int = 0
 
 
@@ -247,6 +253,7 @@ def main() -> int:
     parser.add_argument("--model", default="sonnet")
     parser.add_argument("--tasks", nargs="*", default=[task.key for task in TASKS])
     parser.add_argument("--dry-run", action="store_true", help="Score the starting states only.")
+    parser.add_argument("--arms", nargs="*", default=list(ARMS))
     args = parser.parse_args()
 
     saved = settings.read_env(ROOT / ".env")
@@ -260,7 +267,7 @@ def main() -> int:
     workspace = Path(tempfile.mkdtemp(prefix="weaveconnect-compare-"))
     results = []
     for task in tasks:
-        for arm in ARMS:
+        for arm in [a for a in ARMS if a in args.arms]:
             for run in range(1, args.runs + 1):
                 repo = prepare(task, arm, workspace / f"run{run}")
                 harness = (

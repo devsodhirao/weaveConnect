@@ -84,6 +84,7 @@ Observed on October 30, 2026, against `devfromlll-learning-layer-labs/weaveConne
 | `eval --trials 3` (November 2) | The Llama failure set scored 0/9 runs. After switching to gpt-oss-120b it scored 9/9: 3 cases fixed (every trial passing), 0 broke, 0 flaky. |
 | New `next` checks (November 2) | A real run asking about order 9999 appeared as a tool error result, reported but not counted as a failure. A model request recorded twice now counts once, and lone model calls are not counted as agent runs. |
 | `label` (November 2) | It refused without an interactive terminal. In a simulated session with scripted answers and `--no-save`, it showed each case with the judge's verdict and reason and reported the agreement. No labels have been saved: real ones must come from a person. |
+| Comparison with Claude Code (Sonnet, isolated), November 2 | 36 runs were planned. The Anthropic API credit ran out after run 22, so runs 23 to 36 are excluded. Valid runs for adding tracing and for fixing "nothing arrives": no skill 6/6, W&B's skill 0/6, W&B's skill plus weaveConnect 6/6. For "counted twice": no skill 3/3, W&B's skill 0/1. The W&B-skill runs finished in 11 to 19 seconds without a passing change. That is consistent with the skill's login check stopping the agent in this locked-down setup, but not confirmed, because final messages were not recorded then. With weaveConnect the agent ran its commands in 6/6 runs and passed, but took 71 to 80 seconds, against 12 to 15 with no skill, and cost about twice as much. Total spend: $0.53. |
 | Offline tests | 38 passed; Ruff clean. |
 
 Two lessons from building it:
@@ -110,9 +111,7 @@ Two lessons from building it:
 - "Watch it" has no command yet. A monitor needs Weave's scorer extras and server-side
   setup; Coreweaving runs a live Signal of this kind, a monitor on completed turns scored on
   CoreWeave inference.
-- Not yet measured: whether coding agents do better with this kit than with W&B's skill alone.
-  W&B's own [Skill Bench](https://github.com/wandb/skills/tree/main/bench) is built for that kind
-  of question. `scripts/compare.py` is a smaller version that has not been run with an agent.
+- What the comparison does and does not show: on these tasks a plain agent already passes, so it does not show weaveConnect helping. It shows the kit getting an agent past W&B's login check in a locked-down setup, at the cost of time. The harder tasks ("counted twice" with the kit, "secret in trace") have no valid runs yet. W&B's own [Skill Bench](https://github.com/wandb/skills/tree/main/bench) is the better tool for this question.
 - Evaluations and the sample agent use W&B Inference credits.
 
 Local checks: `uv run pytest -q` and `uv run ruff check .`

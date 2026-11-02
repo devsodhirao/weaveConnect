@@ -1,0 +1,68 @@
+[
+  {
+    "task": "counted-twice",
+    "arm": "bare",
+    "run": 1,
+    "passed": true,
+    "checks": {
+      "Your command": "pass",
+      "Traces arrived": "pass",
+      "Model calls recorded": "pass",
+      "Step `lookup_order` recorded": "pass",
+      "Each model call recorded once": "pass",
+      "Every call finished": "pass",
+      "No secrets in traces": "pass"
+    },
+    "seconds": 15.8,
+    "cost_usd": 0.0120413,
+    "turns": 3,
+    "harness_error": false,
+    "used_weaveconnect": false,
+    "skills_used": [],
+    "diff_lines": 16
+  },
+  {
+    "task": "counted-twice",
+    "arm": "wandb",
+    "run": 1,
+    "passed": false,
+    "checks": {
+      "Your command": "pass",
+      "Traces arrived": "pass",
+      "Model calls recorded": "pass",
+      "Step `lookup_order` recorded": "pass",
+      "Each model call recorded once": "fail",
+      "Every call finished": "pass",
+      "No secrets in traces": "pass"
+    },
+    "seconds": 17.7,
+    "cost_usd": 0.027152299999999997,
+    "turns": 4,
+    "harness_error": false,
+    "used_weaveconnect": false,
+    "skills_used": [],
+    "diff_lines": 0
+  },
+  {
+    "task": "counted-twice",
+    "arm": "wandb+kit",
+    "run": 1,
+    "passed": true,
+    "checks": {
+      "Your command": "pass",
+      "Traces arrived": "pass",
+      "Model calls recorded": "pass",
+      "Step `lookup_order` recorded": "pass",
+      "Each model call recorded once": "pass",
+      "Every call finished": "pass",
+      "No secrets in traces": "pass"
+    },
+    "seconds": 65.5,
+    "cost_usd": 0.024919700000000003,
+    "turns": 5,
+    "harness_error": false,
+    "used_weaveconnect": true,
+    "skills_used": [],
+    "diff_lines": 13
+  }
+]

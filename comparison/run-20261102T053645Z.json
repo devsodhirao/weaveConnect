@@ -1,0 +1,92 @@
+[
+  {
+    "task": "add-tracing",
+    "arm": "wandb",
+    "run": 1,
+    "passed": false,
+    "checks": {
+      "Your command": "pass",
+      "Traces arrived": "fail"
+    },
+    "seconds": 4.7,
+    "cost_usd": 0,
+    "turns": 1,
+    "harness_error": true,
+    "used_weaveconnect": false,
+    "skills_used": [],
+    "outcome": "success",
+    "final_message": "Credit balance is too low",
+    "denied": 0,
+    "diff_lines": 0
+  },
+  {
+    "task": "add-tracing",
+    "arm": "wandb+kit",
+    "run": 1,
+    "passed": false,
+    "checks": {
+      "Your command": "pass",
+      "Traces arrived": "fail"
+    },
+    "seconds": 4.4,
+    "cost_usd": 0,
+    "turns": 1,
+    "harness_error": true,
+    "used_weaveconnect": false,
+    "skills_used": [],
+    "outcome": "success",
+    "final_message": "Credit balance is too low",
+    "denied": 0,
+    "diff_lines": 0
+  },
+  {
+    "task": "counted-twice",
+    "arm": "wandb",
+    "run": 1,
+    "passed": false,
+    "checks": {
+      "Your command": "pass",
+      "Traces arrived": "pass",
+      "Model calls recorded": "pass",
+      "Step `lookup_order` recorded": "pass",
+      "Each model call recorded once": "fail",
+      "Every call finished": "pass",
+      "No secrets in traces": "pass"
+    },
+    "seconds": 4.5,
+    "cost_usd": 0,
+    "turns": 1,
+    "harness_error": true,
+    "used_weaveconnect": false,
+    "skills_used": [],
+    "outcome": "success",
+    "final_message": "Credit balance is too low",
+    "denied": 0,
+    "diff_lines": 0
+  },
+  {
+    "task": "counted-twice",
+    "arm": "wandb+kit",
+    "run": 1,
+    "passed": false,
+    "checks": {
+      "Your command": "pass",
+      "Traces arrived": "pass",
+      "Model calls recorded": "pass",
+      "Step `lookup_order` recorded": "pass",
+      "Each model call recorded once": "fail",
+      "Every call finished": "pass",
+      "No secrets in traces": "pass"
+    },
+    "seconds": 4.4,
+    "cost_usd": 0,
+    "turns": 1,
+    "harness_error": true,
+    "used_weaveconnect": false,
+    "skills_used": [],
+    "outcome": "success",
+    "final_message": "Credit balance is too low",
+    "denied": 0,
+    "diff_lines": 0
+  }
+]

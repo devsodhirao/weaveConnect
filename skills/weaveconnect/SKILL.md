@@ -46,7 +46,10 @@ next step it names. Do not invent findings it did not print.
   broke, say which.
 - With known answers instead: `--cases cases.jsonl`, one JSON object per line with the
   function's argument names and an `expected` list of acceptable phrases.
+- Add `--trials 3` before claiming a fix: a case counts as fixed only when every trial passes.
 - In CI, add `--min-pass 0.8` (or the agreed share) so the command fails below it.
+- To check the judge, ask the user to run `weaveconnect label` in their own terminal. Never
+  answer its questions yourself: labels must come from a person.
 
 The judge cannot see the agent's tools or data. It grades whether replies answer the question;
 the `expected` phrases and the code checks own the facts. One run of each case is a signal, not a

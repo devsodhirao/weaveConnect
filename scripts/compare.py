@@ -11,6 +11,7 @@ Only the kit arm gets the skill and the `weaveconnect` command; the prompts are 
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -26,6 +27,10 @@ from weaveconnect.checks import check_run
 ROOT = Path(__file__).resolve().parent.parent
 AGENT = ROOT / "examples" / "support_agent" / "agent.py"
 SKILL = ROOT / "skills" / "weaveconnect"
+# W&B's official skill (github.com/wandb/skills), copied in for the baseline arms.
+WANDB_SKILL = Path(os.environ.get("WANDB_SKILL_DIR", ROOT / "comparison" / "weave-instrument"))
+ARMS = ("bare", "wandb", "wandb+kit")
+KIT_COMMAND = re.compile(r"(?:^|[\s;&|])weaveconnect\s+(?:connect|check|next|eval|label)\b")
 VENV_BIN = ROOT / ".venv" / "bin"
 FAKE_SECRET = "demo-not-a-real-secret-0042"
 QUESTION = "Where is my order 1042?"
@@ -96,8 +101,9 @@ def starting_state(kind: str) -> str:
     raise ValueError(kind)
 
 
-def prepare(task: Task, kit: bool, workspace: Path) -> Path:
-    repo = workspace / f"{task.key}-{'kit' if kit else 'bare'}"
+def prepare(task: Task, arm: str, workspace: Path) -> Path:
+    kit = arm == "wandb+kit"
+    repo = workspace / f"{task.key}-{arm.replace('+', '-')}"
     repo.mkdir(parents=True)
     (repo / "agent.py").write_text(starting_state(task.start))
     shutil.copy(AGENT.parent / "cases.jsonl", repo / "cases.jsonl")
@@ -106,6 +112,8 @@ def prepare(task: Task, kit: bool, workspace: Path) -> Path:
     bin_dir = repo / ".bin"
     bin_dir.mkdir()
     (bin_dir / "python").symlink_to(VENV_BIN / "python")
+    if arm != "bare" and WANDB_SKILL.exists():
+        shutil.copytree(WANDB_SKILL, repo / ".claude" / "skills" / "weave-instrument")
     if kit:
         shutil.copytree(SKILL, repo / ".claude" / "skills" / "weaveconnect")
         (bin_dir / "weaveconnect").symlink_to(VENV_BIN / "weaveconnect")
@@ -128,10 +136,10 @@ def prepare(task: Task, kit: bool, workspace: Path) -> Path:
     return repo
 
 
-def run_harness(repo: Path, task: Task, budget: float, model: str) -> dict:
+def run_harness(repo: Path, task: Task, budget: float, model: str, arm: str = "bare") -> dict:
     env = {**os.environ, "PATH": f"{repo / '.bin'}:/usr/bin:/bin", "DEMO_SECRET_TOKEN": FAKE_SECRET}
     command = [
-        "claude",
+        shutil.which("claude") or "claude",
         "-p",
         task.prompt,
         "--bare",
@@ -149,24 +157,51 @@ def run_harness(repo: Path, task: Task, budget: float, model: str) -> dict:
         "--model",
         model,
         "--output-format",
-        "json",
+        "stream-json",
+        "--verbose",
         "--no-session-persistence",
     ]
+    # Isolated mode does not load skills from the project, so each arm's skill text is given
+    # to the agent directly, as if the skill had been invoked.
+    skills = []
+    if arm != "bare" and WANDB_SKILL.exists():
+        skills.append(f"W&B weave-instrument skill:\n{(WANDB_SKILL / 'SKILL.md').read_text()}")
+    if arm == "wandb+kit":
+        skills.append(f"weaveconnect skill:\n{(SKILL / 'SKILL.md').read_text()}")
+    if skills:
+        command += ["--append-system-prompt", "\n\n".join(skills)]
     started = time.monotonic()
     completed = subprocess.run(
         command, cwd=repo, env=env, capture_output=True, text=True, timeout=900
     )
     seconds = round(time.monotonic() - started, 1)
-    try:
-        result = json.loads(completed.stdout)
-    except json.JSONDecodeError:
-        result = {"is_error": True, "result": completed.stdout[-500:] + completed.stderr[-500:]}
+    events = []
+    for line in completed.stdout.splitlines():
+        try:
+            events.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    result = next((e for e in reversed(events) if e.get("type") == "result"), {"is_error": True})
+    uses = [
+        block
+        for e in events
+        if e.get("type") == "assistant"
+        for block in (e.get("message") or {}).get("content") or []
+        if isinstance(block, dict) and block.get("type") == "tool_use"
+    ]
+    skills = sorted(
+        {str((u.get("input") or {}).get("skill")) for u in uses if u.get("name") == "Skill"}
+    )
+    commands = [
+        str((u.get("input") or {}).get("command", "")) for u in uses if u.get("name") == "Bash"
+    ]
     return {
         "seconds": seconds,
         "cost_usd": result.get("total_cost_usd"),
         "turns": result.get("num_turns"),
         "harness_error": bool(result.get("is_error")),
-        "used_weaveconnect": "weaveconnect" in json.dumps(result),
+        "skills_used": skills,
+        "used_weaveconnect": any(KIT_COMMAND.search(command) for command in commands),
     }
 
 
@@ -201,6 +236,7 @@ class Result:
     turns: int | None = None
     harness_error: bool = False
     used_weaveconnect: bool = False
+    skills_used: list | None = None
     diff_lines: int = 0
 
 
@@ -224,10 +260,12 @@ def main() -> int:
     workspace = Path(tempfile.mkdtemp(prefix="weaveconnect-compare-"))
     results = []
     for task in tasks:
-        for arm in ("bare", "kit"):
+        for arm in ARMS:
             for run in range(1, args.runs + 1):
-                repo = prepare(task, arm == "kit", workspace / f"run{run}")
-                harness = {} if args.dry_run else run_harness(repo, task, args.budget, args.model)
+                repo = prepare(task, arm, workspace / f"run{run}")
+                harness = (
+                    {} if args.dry_run else run_harness(repo, task, args.budget, args.model, arm)
+                )
                 scored = score(repo)
                 result = Result(
                     task.key,
@@ -251,7 +289,7 @@ def main() -> int:
     secrets = settings.secret_values(dict(os.environ))
     out.write_text(settings.redact(json.dumps([asdict(r) for r in results], indent=2), secrets))
     print(f"\nSaved {out.relative_to(ROOT)}")
-    for arm in ("bare", "kit"):
+    for arm in ARMS:
         arm_results = [r for r in results if r.arm == arm]
         passed = sum(r.passed for r in arm_results)
         print(f"{arm}: {passed}/{len(arm_results)} runs passed every check")
